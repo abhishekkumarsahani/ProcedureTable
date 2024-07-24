@@ -1,0 +1,54 @@
+USE [BlogDemoDatabase]
+GO
+
+/****** Object:  Table [dbo].[tbl_assign_bus]    Script Date: 7/24/2024 4:12:46 PM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE TABLE [dbo].[tbl_assign_bus](
+	[assigned_id] [int] IDENTITY(1,1) NOT NULL,
+	[student_id] [int] NULL,
+	[bus_id] [int] NULL,
+	[pickup_location] [varchar](255) NULL,
+	[dropoff_location] [varchar](255) NULL,
+	[created_date] [nvarchar](100) NULL,
+	[updated_date] [nvarchar](100) NULL,
+	[created_by] [int] NULL,
+	[updated_by] [int] NULL,
+	[del_flag] [nchar](1) NULL,
+PRIMARY KEY CLUSTERED 
+(
+	[assigned_id] ASC
+)WITH (PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON, OPTIMIZE_FOR_SEQUENTIAL_KEY = OFF) ON [PRIMARY]
+) ON [PRIMARY]
+GO
+
+ALTER TABLE [dbo].[tbl_assign_bus] ADD  DEFAULT (getdate()) FOR [created_date]
+GO
+
+ALTER TABLE [dbo].[tbl_assign_bus] ADD  DEFAULT (getdate()) FOR [updated_date]
+GO
+
+ALTER TABLE [dbo].[tbl_assign_bus] ADD  DEFAULT ('N') FOR [del_flag]
+GO
+
+ALTER TABLE [dbo].[tbl_assign_bus]  WITH CHECK ADD FOREIGN KEY([bus_id])
+REFERENCES [dbo].[tbl_bus] ([bus_id])
+GO
+
+ALTER TABLE [dbo].[tbl_assign_bus]  WITH CHECK ADD FOREIGN KEY([created_by])
+REFERENCES [dbo].[tbl_user] ([ID])
+GO
+
+ALTER TABLE [dbo].[tbl_assign_bus]  WITH CHECK ADD FOREIGN KEY([student_id])
+REFERENCES [dbo].[tbl_user] ([ID])
+GO
+
+ALTER TABLE [dbo].[tbl_assign_bus]  WITH CHECK ADD FOREIGN KEY([updated_by])
+REFERENCES [dbo].[tbl_user] ([ID])
+GO
+
+

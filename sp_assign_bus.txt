@@ -1,0 +1,117 @@
+USE [BlogDemoDatabase]
+GO
+/****** Object:  StoredProcedure [dbo].[sp_assign_bus]    Script Date: 7/24/2024 3:48:57 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROCEDURE [dbo].[sp_assign_bus]
+    @UserID INT,
+    @Flag CHAR(1),
+    @AssignedID INT = NULL,
+    @StudentID INT = NULL,
+    @BusID INT = NULL,
+    @PickupLocation VARCHAR(255) = NULL,
+    @DropoffLocation VARCHAR(255) = NULL
+AS
+BEGIN
+    -- Validate required parameters
+    IF @UserID IS NULL OR (@Flag IN ('I', 'U', 'R') AND (@StudentID IS NULL OR @BusID IS NULL))
+    BEGIN
+        SELECT 400 AS StatusCode, 'For Empty validation';
+        RETURN;
+    END
+
+    -- Create operation
+    IF @Flag = 'I'
+    BEGIN
+        -- Check if user, school, student, and bus exist
+        IF NOT EXISTS (SELECT 1 FROM tbl_user WHERE id = @UserID) 
+            OR NOT EXISTS (SELECT 1 FROM tbl_user WHERE id = @StudentID) 
+            OR NOT EXISTS (SELECT 1 FROM tbl_bus WHERE bus_id = @BusID)
+        BEGIN
+            SELECT 201 AS StatusCode, 'User does not exist, school doesn’t exist, student doesn’t exist, or Bus doesn’t exist';
+            RETURN;
+        END
+
+        -- Insert new bus assignment
+        INSERT INTO tbl_assign_bus (student_id, bus_id, pickup_location, dropoff_location, created_by, updated_by, created_date, updated_date, del_flag)
+        VALUES (@StudentID, @BusID, @PickupLocation, @DropoffLocation, @UserID, @UserID, GETDATE(), GETDATE(), 'N');
+
+        SELECT 200 AS StatusCode, 'Success';
+    END
+    -- Update operation
+    ELSE IF @Flag = 'U'
+    BEGIN
+        -- Validate that the assignment exists
+        IF NOT EXISTS (SELECT 1 FROM tbl_assign_bus WHERE assigned_id = @AssignedID)
+        BEGIN
+            SELECT 201 AS StatusCode, 'Assignment not found';
+            RETURN;
+        END
+
+        -- Update bus assignment
+        UPDATE tbl_assign_bus
+        SET student_id = COALESCE(@StudentID, student_id),
+            bus_id = COALESCE(@BusID, bus_id),
+            pickup_location = COALESCE(@PickupLocation, pickup_location),
+            dropoff_location = COALESCE(@DropoffLocation, dropoff_location),
+            updated_by = @UserID,
+            updated_date = GETDATE()
+        WHERE assigned_id = @AssignedID;
+
+        SELECT 200 AS StatusCode, 'Success';
+    END
+    -- View operation
+    ELSE IF @Flag = 'S'
+    BEGIN
+        -- Validate that the bus ID is provided
+        IF @BusID IS NULL
+        BEGIN
+            SELECT 400 AS StatusCode, 'For Empty validation';
+            RETURN;
+        END
+
+        -- Retrieve bus assignments
+        SELECT 
+            ab.assigned_id AS AssignedID,
+            ab.student_id AS StudentID,
+            ab.bus_id AS BusID,
+            ab.pickup_location AS PickupLocation,
+            ab.dropoff_location AS DropoffLocation,
+            s.contact AS Class,
+            s.contact AS Section,
+            s.first_name AS StudentName
+        FROM tbl_assign_bus ab
+        JOIN tbl_user s ON ab.student_id = s.id
+        WHERE ab.bus_id = @BusID AND ab.del_flag = 'N';
+
+        -- Return no data found if no results
+        IF @@ROWCOUNT = 0
+        BEGIN
+            SELECT 400 AS StatusCode, 'No bus assignments found';
+        END
+    END
+    -- Delete operation
+    ELSE IF @Flag = 'R'
+    BEGIN
+        -- Validate that the assignment exists
+        IF NOT EXISTS (SELECT 1 FROM tbl_assign_bus WHERE assigned_id = @AssignedID)
+        BEGIN
+            SELECT 201 AS StatusCode, 'Assignment not found';
+            RETURN;
+        END
+
+        -- Soft delete bus assignment
+        UPDATE tbl_assign_bus
+        SET del_flag = 'Y'
+        WHERE assigned_id = @AssignedID AND bus_id = @BusID;
+
+        SELECT 200 AS StatusCode, 'Success';
+    END
+    ELSE
+    BEGIN
+        -- Handle invalid flag
+        SELECT 400 AS StatusCode, 'Invalid flag';
+    END
+END

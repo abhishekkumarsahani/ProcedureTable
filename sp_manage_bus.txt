@@ -1,0 +1,134 @@
+USE [BlogDemoDatabase]
+GO
+/****** Object:  StoredProcedure [dbo].[sp_manage_bus]    Script Date: 7/24/2024 4:15:39 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROCEDURE [dbo].[sp_manage_bus]
+    @UserID INT,
+    @SchID INT = NULL,
+    @Flag CHAR(1),
+    @IsActive NCHAR(1) = NULL,
+    @BusNumber VARCHAR(50) = NULL,
+    @DriverName VARCHAR(100) = NULL,
+    @DriverContact VARCHAR(15) = NULL,
+    @BusID INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Handle Create (Insert) Operation
+    IF @Flag = 'I'
+    BEGIN
+        -- Validate input parameters
+        IF @UserID IS NULL OR @SchID IS NULL OR @IsActive IS NULL OR @BusNumber IS NULL OR @DriverName IS NULL OR @DriverContact IS NULL
+        BEGIN
+            SELECT 400 AS StatusCode, 'For Empty validation' AS Message;
+            RETURN;
+        END
+
+        -- Check if School ID exists
+        IF NOT EXISTS (SELECT 1 FROM tbl_user WHERE id = @SchID)
+        BEGIN
+            SELECT 201 AS StatusCode, 'School does not exist' AS Message;
+            RETURN;
+        END
+
+        -- Insert new bus record
+        INSERT INTO tbl_bus (Sch_id, Is_active, bus_number, driver_name, driver_contact, created_by, updated_by, created_date, updated_date)
+        VALUES (@SchID, @IsActive, @BusNumber, @DriverName, @DriverContact, @UserID, @UserID, GETDATE(), GETDATE());
+
+        -- Return the newly created BusID
+        SELECT 200 AS StatusCode, 'Success' AS Message, SCOPE_IDENTITY() AS BusID;
+    END
+    -- Handle View (Select) Operation
+    ELSE IF @Flag = 'S'
+    BEGIN
+        -- Validate input parameters
+        IF @UserID IS NULL OR @SchID IS NULL
+        BEGIN
+            SELECT 400 AS StatusCode, 'For Empty validation' AS Message;
+            RETURN;
+        END
+
+        -- Check if School ID exists
+        IF NOT EXISTS (SELECT 1 FROM tbl_user WHERE id = @SchID)
+        BEGIN
+            SELECT 201 AS StatusCode, 'School does not exist' AS Message;
+            RETURN;
+        END
+
+        -- Retrieve bus information
+        SELECT bus_id AS BusID, Sch_id AS SchoolID, bus_number AS BusNumber, driver_name AS DriverName, driver_contact AS DriverContact, Is_active AS IsActive
+        FROM tbl_bus
+        WHERE Sch_id = @SchID AND (is_del IS NULL OR is_del = 'N');
+    END
+    -- Handle Update Operation
+    ELSE IF @Flag = 'U'
+    BEGIN
+        -- Validate input parameters
+        IF @UserID IS NULL OR @BusID IS NULL OR @SchID IS NULL OR @IsActive IS NULL OR @BusNumber IS NULL OR @DriverName IS NULL OR @DriverContact IS NULL
+        BEGIN
+            SELECT 400 AS StatusCode, 'For Empty validation' AS Message;
+            RETURN;
+        END
+
+        -- Check if School ID exists
+        IF NOT EXISTS (SELECT 1 FROM tbl_user WHERE id = @SchID)
+        BEGIN
+            SELECT 201 AS StatusCode, 'School does not exist' AS Message;
+            RETURN;
+        END
+
+        -- Update bus record
+        UPDATE tbl_bus
+        SET Sch_id = @SchID,
+            Is_active = @IsActive,
+            bus_number = @BusNumber,
+            driver_name = @DriverName,
+            driver_contact = @DriverContact,
+            updated_by = @UserID,
+            updated_date = GETDATE()
+        WHERE bus_id = @BusID;
+
+        SELECT 200 AS StatusCode, 'Success' AS Message;
+    END
+    -- Handle Delete Operation
+    ELSE IF @Flag = 'R'
+    BEGIN
+        -- Validate input parameters
+        IF @UserID IS NULL OR @BusID IS NULL OR @SchID IS NULL
+        BEGIN
+            SELECT 400 AS StatusCode, 'For Empty validation' AS Message;
+            RETURN;
+        END
+
+        -- Check if School ID exists
+        IF NOT EXISTS (SELECT 1 FROM tbl_user WHERE id = @SchID)
+        BEGIN
+            SELECT 201 AS StatusCode, 'School does not exist' AS Message;
+            RETURN;
+        END
+
+        -- Check if the bus exists
+        IF NOT EXISTS (SELECT 1 FROM tbl_bus WHERE bus_id = @BusID)
+        BEGIN
+            SELECT 201 AS StatusCode, 'Bus not found' AS Message;
+            RETURN;
+        END
+
+        -- Mark bus record as deleted
+        UPDATE tbl_bus
+        SET is_del = 'Y',
+            updated_by = @UserID,
+            updated_date = GETDATE()
+        WHERE bus_id = @BusID;
+
+        SELECT 200 AS StatusCode, 'Success' AS Message;
+    END
+    ELSE
+    BEGIN
+        SELECT 400 AS StatusCode, 'Invalid flag value' AS Message;
+    END
+END;
