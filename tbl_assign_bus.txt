@@ -1,54 +1,139 @@
-USE [BlogDemoDatabase]
-GO
+ALTER PROCEDURE sp_assign_bus (
+    @UserID INT,
+    @ImeiID NVARCHAR(60),
+    @SchID INT,
+    @BusID INT,
+    @PickupLocation VARCHAR(100) = NULL,
+    @DropoffLocation VARCHAR(100) = NULL,
+    @Flag CHAR(1),
+    @Students XML
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
 
-/****** Object:  Table [dbo].[tbl_assign_bus]    Script Date: 7/24/2024 4:12:46 PM ******/
-SET ANSI_NULLS ON
-GO
+    DECLARE @today DATETIME = GETDATE();
+    DECLARE @AssignBusID BIGINT;
+    DECLARE @temp TABLE(ID INT IDENTITY(1,1) PRIMARY KEY, StudentID INT);
+    DECLARE @i INT;
+    DECLARE @count INT;
+    DECLARE @StudentID INT;
 
-SET QUOTED_IDENTIFIER ON
-GO
+    IF @Flag = 'I'
+    BEGIN
+        -- Insert a new assignment
+        INSERT INTO tbl_bus_assignment (UserID, ImeiID, SchID, BusID, PickupLocation, DropoffLocation, Flag, created_by, updated_by, created_date, updated_date)
+        VALUES (@UserID, @ImeiID, @SchID, @BusID, @PickupLocation, @DropoffLocation, @Flag, @UserID, @UserID, @today, @today);
 
-CREATE TABLE [dbo].[tbl_assign_bus](
-	[assigned_id] [int] IDENTITY(1,1) NOT NULL,
-	[student_id] [int] NULL,
-	[bus_id] [int] NULL,
-	[pickup_location] [varchar](255) NULL,
-	[dropoff_location] [varchar](255) NULL,
-	[created_date] [nvarchar](100) NULL,
-	[updated_date] [nvarchar](100) NULL,
-	[created_by] [int] NULL,
-	[updated_by] [int] NULL,
-	[del_flag] [nchar](1) NULL,
-PRIMARY KEY CLUSTERED 
-(
-	[assigned_id] ASC
-)WITH (PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON, OPTIMIZE_FOR_SEQUENTIAL_KEY = OFF) ON [PRIMARY]
-) ON [PRIMARY]
-GO
+        SET @AssignBusID = SCOPE_IDENTITY();
 
-ALTER TABLE [dbo].[tbl_assign_bus] ADD  DEFAULT (getdate()) FOR [created_date]
-GO
+        -- Parse and insert students
+        INSERT INTO @temp
+        SELECT StudentID = Node.Data.value('(StudentID)[1]', 'INT')
+        FROM @Students.nodes('/Students/Student') AS Node(Data);
 
-ALTER TABLE [dbo].[tbl_assign_bus] ADD  DEFAULT (getdate()) FOR [updated_date]
-GO
+        SET @i = 1;
+        SET @count = (SELECT COUNT(1) FROM @temp);
 
-ALTER TABLE [dbo].[tbl_assign_bus] ADD  DEFAULT ('N') FOR [del_flag]
-GO
+        WHILE (@count != 0)
+        BEGIN
+            SET @StudentID = (SELECT StudentID FROM @temp WHERE ID = @i);
+            
+            INSERT INTO tbl_bus_assignment_students (AssignBusID, StudentID)
+            VALUES (@AssignBusID, @StudentID);
 
-ALTER TABLE [dbo].[tbl_assign_bus]  WITH CHECK ADD FOREIGN KEY([bus_id])
-REFERENCES [dbo].[tbl_bus] ([bus_id])
-GO
+            SET @i = @i + 1;
+            SET @count = @count - 1;
+        END;
+    END
+    ELSE IF @Flag = 'U'
+    BEGIN
+        -- Update existing assignment
+        SET @AssignBusID = (SELECT TOP 1 AssignBusID FROM tbl_bus_assignment WHERE UserID = @UserID AND BusID = @BusID AND SchID = @SchID AND is_del = 'N');
+        
+        IF @AssignBusID IS NOT NULL
+        BEGIN
+            UPDATE tbl_bus_assignment
+            SET ImeiID = @ImeiID,
+                PickupLocation = @PickupLocation,
+                DropoffLocation = @DropoffLocation,
+                Flag = @Flag,
+                updated_by = @UserID,
+                updated_date = @today
+            WHERE AssignBusID = @AssignBusID;
 
-ALTER TABLE [dbo].[tbl_assign_bus]  WITH CHECK ADD FOREIGN KEY([created_by])
-REFERENCES [dbo].[tbl_user] ([ID])
-GO
+            -- Parse and update students
+            DELETE FROM tbl_bus_assignment_students WHERE AssignBusID = @AssignBusID;
 
-ALTER TABLE [dbo].[tbl_assign_bus]  WITH CHECK ADD FOREIGN KEY([student_id])
-REFERENCES [dbo].[tbl_user] ([ID])
-GO
+            INSERT INTO @temp
+            SELECT StudentID = Node.Data.value('(StudentID)[1]', 'INT')
+            FROM @Students.nodes('/Students/Student') AS Node(Data);
 
-ALTER TABLE [dbo].[tbl_assign_bus]  WITH CHECK ADD FOREIGN KEY([updated_by])
-REFERENCES [dbo].[tbl_user] ([ID])
-GO
+            SET @i = 1;
+            SET @count = (SELECT COUNT(1) FROM @temp);
 
+            WHILE (@count != 0)
+            BEGIN
+                SET @StudentID = (SELECT StudentID FROM @temp WHERE ID = @i);
+                
+                INSERT INTO tbl_bus_assignment_students (AssignBusID, StudentID)
+                VALUES (@AssignBusID, @StudentID);
 
+                SET @i = @i + 1;
+                SET @count = @count - 1;
+            END;
+        END
+        ELSE
+        BEGIN
+            -- Assignment not found
+            SELECT 201 AS StatusCode, 'Assignment not found' AS Message;
+            RETURN;
+        END
+    END
+    ELSE IF @Flag = 'R'
+    BEGIN
+        -- Remove the assignment
+        SET @AssignBusID = (SELECT TOP 1 AssignBusID FROM tbl_bus_assignment WHERE UserID = @UserID AND BusID = @BusID AND SchID = @SchID AND is_del = 'N');
+        
+        IF @AssignBusID IS NOT NULL
+        BEGIN
+            UPDATE tbl_bus_assignment
+            SET is_del = 'Y',
+                updated_by = @UserID,
+                updated_date = @today
+            WHERE AssignBusID = @AssignBusID;
+        END
+        ELSE
+        BEGIN
+            -- Assignment not found
+            SELECT 201 AS StatusCode, 'Assignment not found' AS Message;
+            RETURN;
+        END
+    END
+    ELSE IF @Flag = 'S'
+    BEGIN
+        -- View the assignment details
+        SELECT 
+            a.AssignBusID,
+            a.UserID,
+            a.ImeiID,
+            a.SchID,
+            a.BusID,
+            a.PickupLocation,
+            a.DropoffLocation,
+            a.Flag,
+            a.created_by,
+            a.updated_by,
+            a.created_date,
+            a.updated_date,
+            s.StudentID
+        FROM tbl_bus_assignment a
+        JOIN tbl_bus_assignment_students s ON a.AssignBusID = s.AssignBusID
+        WHERE a.SchID = @SchID
+        AND a.BusID = @BusID
+        AND a.is_del = 'N';
+    END
+
+    -- Return success message
+    SELECT 200 AS StatusCode, 'Success' AS Message;
+END;
