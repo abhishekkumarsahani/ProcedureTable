@@ -22,19 +22,16 @@ CREATE TABLE tbl_school_bus_assign_students (
 );
 GO
 
-PROCEDURE FOR THE SP ASSIGN BUS
 USE [EasySchoolNew]
 GO
-/****** Object:  StoredProcedure [dbo].[sp_school_bus_assign]    Script Date: 7/29/2024 12:21:40 PM ******/
+/****** Object:  StoredProcedure [dbo].[sp_admin_assign_bus]    Script Date: 7/30/2024 12:49:23 PM ******/
 SET ANSI_NULLS ON
 GO
 SET QUOTED_IDENTIFIER ON
 GO
-
-
-ALTER PROCEDURE [dbo].[sp_school_bus_assign] (
+ALTER PROCEDURE [dbo].[sp_admin_assign_bus]
+(
     @userid INT,
-    @imeiid NVARCHAR(60),
     @schid NVARCHAR(50),
     @busid INT,
     @pickuplocation VARCHAR(100) = NULL,
@@ -47,11 +44,12 @@ BEGIN
     SET NOCOUNT ON;
 
     DECLARE @today DATETIME = GETDATE();
-    DECLARE @assignbusid BIGINT;
-    DECLARE @temp TABLE(id INT IDENTITY(1,1) PRIMARY KEY, studentid INT);
-    DECLARE @i INT;
-    DECLARE @count INT;
-    DECLARE @studentid INT;
+    DECLARE @assignbusid INT;
+
+    -- Create a table variable to store student IDs temporarily
+    DECLARE @TempStudentIDs TABLE (
+        studentid INT PRIMARY KEY
+    );
 
     -- Validate User, School, and Bus existence
     IF NOT EXISTS (SELECT 1 FROM tbl_user WHERE user_id = @userid AND sch_id = @schid AND del_flag = 'N')
@@ -75,67 +73,49 @@ BEGIN
     IF @flag = 'I'
     BEGIN
         -- Insert a new assignment
-        INSERT INTO tbl_school_bus_assign (user_id, imei_id, sch_id, bus_id, pickup_location, dropoff_location, created_by, updated_by, created_date, updated_date)
-        VALUES (@userid, @imeiid, @schid, @busid, @pickuplocation, @dropofflocation, @userid, @userid, @today, @today);
+        INSERT INTO tbl_school_bus_assign (user_id, sch_id, bus_id, pickup_location, dropoff_location, created_by, updated_by, created_date, updated_date)
+        VALUES (@userid, @schid, @busid, @pickuplocation, @dropofflocation, @userid, @userid, @today, @today);
 
         SET @assignbusid = SCOPE_IDENTITY();
 
-        -- Parse and insert students
-        INSERT INTO @temp
-        SELECT studentid = Node.Data.value('(StudentID)[1]', 'INT')
+        -- Parse and insert students into the table variable
+        INSERT INTO @TempStudentIDs (studentid)
+        SELECT Node.Data.value('(StudentID)[1]', 'INT')
         FROM @students.nodes('/Students/Student') AS Node(Data);
 
-        SET @i = 1;
-        SET @count = (SELECT COUNT(1) FROM @temp);
-
-        WHILE (@count > 0)
-        BEGIN
-            SET @studentid = (SELECT studentid FROM @temp WHERE id = @i);
-            
-            INSERT INTO tbl_school_bus_assign_students (assign_bus_id, student_id)
-            VALUES (@assignbusid, @studentid);
-
-            SET @i = @i + 1;
-            SET @count = @count - 1;
-        END;
+        -- Display the data from the table variable
+        -- You would replace this section with actual operations if needed
+        SELECT @assignbusid AS AssignBusID, studentid AS StudentID
+        FROM @TempStudentIDs;
 
         SELECT 200 AS StatusCode, 'Success' AS Message;
     END
     ELSE IF @flag = 'U'
     BEGIN
         -- Update existing assignment
-        SET @assignbusid = (SELECT TOP 1 assign_bus_id FROM tbl_school_bus_assign WHERE user_id = @userid AND bus_id = @busid AND sch_id = @schid AND is_del = 'N');
+        SET @assignbusid = (SELECT TOP 1 id FROM tbl_school_bus_assign WHERE user_id = @userid AND bus_id = @busid AND sch_id = @schid AND is_del = 'N');
         
         IF @assignbusid IS NOT NULL
         BEGIN
             UPDATE tbl_school_bus_assign
-            SET imei_id = @imeiid,
+            SET 
                 pickup_location = @pickuplocation,
                 dropoff_location = @dropofflocation,
                 updated_by = @userid,
                 updated_date = @today
-            WHERE assign_bus_id = @assignbusid;
+            WHERE id = @assignbusid;
 
-            -- Parse and update students
-            DELETE FROM tbl_school_bus_assign_students WHERE assign_bus_id = @assignbusid;
+           
 
-            INSERT INTO @temp
-            SELECT studentid = Node.Data.value('(StudentID)[1]', 'INT')
+            -- Parse and insert students into the table variable
+            INSERT INTO @TempStudentIDs (studentid)
+            SELECT Node.Data.value('(StudentID)[1]', 'INT')
             FROM @students.nodes('/Students/Student') AS Node(Data);
 
-            SET @i = 1;
-            SET @count = (SELECT COUNT(1) FROM @temp);
-
-            WHILE (@count > 0)
-            BEGIN
-                SET @studentid = (SELECT studentid FROM @temp WHERE id = @i);
-                
-                INSERT INTO tbl_school_bus_assign_students (assign_bus_id, student_id)
-                VALUES (@assignbusid, @studentid);
-
-                SET @i = @i + 1;
-                SET @count = @count - 1;
-            END;
+            -- Display the data from the table variable
+            -- You would replace this section with actual operations if needed
+            SELECT @assignbusid AS AssignBusID, studentid AS StudentID
+            FROM @TempStudentIDs;
 
             SELECT 200 AS StatusCode, 'Success' AS Message;
         END
@@ -148,7 +128,7 @@ BEGIN
     ELSE IF @flag = 'R'
     BEGIN
         -- Remove the assignment
-        SET @assignbusid = (SELECT TOP 1 assign_bus_id FROM tbl_school_bus_assign WHERE user_id = @userid AND bus_id = @busid AND sch_id = @schid AND is_del = 'N');
+        SET @assignbusid = (SELECT TOP 1 id FROM tbl_school_bus_assign WHERE user_id = @userid AND bus_id = @busid AND sch_id = @schid AND is_del = 'N');
         
         IF @assignbusid IS NOT NULL
         BEGIN
@@ -156,7 +136,9 @@ BEGIN
             SET is_del = 'Y',
                 updated_by = @userid,
                 updated_date = @today
-            WHERE assign_bus_id = @assignbusid;
+            WHERE id = @assignbusid;
+
+            -- Optionally handle student assignments here
 
             SELECT 200 AS StatusCode, 'Success' AS Message;
         END
@@ -170,20 +152,14 @@ BEGIN
     BEGIN
         -- View the assignment details
         SELECT 
-            a.assign_bus_id,
-            a.user_id,
-            a.imei_id,
-            a.sch_id,
-            a.bus_id,
-            a.pickup_location,
-            a.dropoff_location,
-            a.created_by,
-            a.updated_by,
-            a.created_date,
-            a.updated_date,
-            s.student_id
+            a.id AS AssignID,
+            u.full_name AS StudentName,
+            c.class_name AS ClassName,
+            s.section_name AS SectionName
         FROM tbl_school_bus_assign a
-        JOIN tbl_school_bus_assign_students s ON a.assign_bus_id = s.assign_bus_id
+        JOIN tbl_user u ON a.user_id = u.user_id
+        JOIN tbl_class c ON u.class_id = c.class_id
+        JOIN tbl_section s ON u.section_id = s.section_id
         WHERE a.sch_id = @schid
         AND a.bus_id = @busid
         AND a.is_del = 'N';
@@ -191,3 +167,4 @@ BEGIN
         SELECT 200 AS StatusCode, 'Success' AS Message;
     END
 END;
+
