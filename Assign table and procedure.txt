@@ -1,0 +1,193 @@
+
+CREATE TABLE tbl_school_bus_assign (
+    assign_bus_id INT IDENTITY(1,1) PRIMARY KEY,
+    user_id INT,
+    imei_id NVARCHAR(60),
+    sch_id NVARCHAR(50),
+    bus_id INT,
+    pickup_location VARCHAR(100),
+    dropoff_location VARCHAR(100),
+    created_by INT,
+    updated_by INT,
+    created_date DATETIME,
+    updated_date DATETIME,
+    is_del CHAR(1) DEFAULT 'N'
+);
+GO
+
+CREATE TABLE tbl_school_bus_assign_students (
+    id INT IDENTITY(1,1) PRIMARY KEY,
+    assign_bus_id INT,
+    student_id INT
+);
+GO
+
+PROCEDURE FOR THE SP ASSIGN BUS
+USE [EasySchoolNew]
+GO
+/****** Object:  StoredProcedure [dbo].[sp_school_bus_assign]    Script Date: 7/29/2024 12:21:40 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+ALTER PROCEDURE [dbo].[sp_school_bus_assign] (
+    @userid INT,
+    @imeiid NVARCHAR(60),
+    @schid NVARCHAR(50),
+    @busid INT,
+    @pickuplocation VARCHAR(100) = NULL,
+    @dropofflocation VARCHAR(100) = NULL,
+    @flag CHAR(1),
+    @students XML
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @today DATETIME = GETDATE();
+    DECLARE @assignbusid BIGINT;
+    DECLARE @temp TABLE(id INT IDENTITY(1,1) PRIMARY KEY, studentid INT);
+    DECLARE @i INT;
+    DECLARE @count INT;
+    DECLARE @studentid INT;
+
+    -- Validate User, School, and Bus existence
+    IF NOT EXISTS (SELECT 1 FROM tbl_user WHERE user_id = @userid AND sch_id = @schid AND del_flag = 'N')
+    BEGIN
+        SELECT 201 AS StatusCode, 'User does not exist or school does not exist' AS Message;
+        RETURN;
+    END
+    
+    IF NOT EXISTS (SELECT 1 FROM tbl_school WHERE sch_id = @schid AND del_flag = 'N')
+    BEGIN
+        SELECT 201 AS StatusCode, 'School does not exist' AS Message;
+        RETURN;
+    END
+    
+    IF NOT EXISTS (SELECT 1 FROM tbl_school_bus WHERE ID = @busid AND is_del = 'N')
+    BEGIN
+        SELECT 201 AS StatusCode, 'Bus does not exist' AS Message;
+        RETURN;
+    END
+
+    IF @flag = 'I'
+    BEGIN
+        -- Insert a new assignment
+        INSERT INTO tbl_school_bus_assign (user_id, imei_id, sch_id, bus_id, pickup_location, dropoff_location, created_by, updated_by, created_date, updated_date)
+        VALUES (@userid, @imeiid, @schid, @busid, @pickuplocation, @dropofflocation, @userid, @userid, @today, @today);
+
+        SET @assignbusid = SCOPE_IDENTITY();
+
+        -- Parse and insert students
+        INSERT INTO @temp
+        SELECT studentid = Node.Data.value('(StudentID)[1]', 'INT')
+        FROM @students.nodes('/Students/Student') AS Node(Data);
+
+        SET @i = 1;
+        SET @count = (SELECT COUNT(1) FROM @temp);
+
+        WHILE (@count > 0)
+        BEGIN
+            SET @studentid = (SELECT studentid FROM @temp WHERE id = @i);
+            
+            INSERT INTO tbl_school_bus_assign_students (assign_bus_id, student_id)
+            VALUES (@assignbusid, @studentid);
+
+            SET @i = @i + 1;
+            SET @count = @count - 1;
+        END;
+
+        SELECT 200 AS StatusCode, 'Success' AS Message;
+    END
+    ELSE IF @flag = 'U'
+    BEGIN
+        -- Update existing assignment
+        SET @assignbusid = (SELECT TOP 1 assign_bus_id FROM tbl_school_bus_assign WHERE user_id = @userid AND bus_id = @busid AND sch_id = @schid AND is_del = 'N');
+        
+        IF @assignbusid IS NOT NULL
+        BEGIN
+            UPDATE tbl_school_bus_assign
+            SET imei_id = @imeiid,
+                pickup_location = @pickuplocation,
+                dropoff_location = @dropofflocation,
+                updated_by = @userid,
+                updated_date = @today
+            WHERE assign_bus_id = @assignbusid;
+
+            -- Parse and update students
+            DELETE FROM tbl_school_bus_assign_students WHERE assign_bus_id = @assignbusid;
+
+            INSERT INTO @temp
+            SELECT studentid = Node.Data.value('(StudentID)[1]', 'INT')
+            FROM @students.nodes('/Students/Student') AS Node(Data);
+
+            SET @i = 1;
+            SET @count = (SELECT COUNT(1) FROM @temp);
+
+            WHILE (@count > 0)
+            BEGIN
+                SET @studentid = (SELECT studentid FROM @temp WHERE id = @i);
+                
+                INSERT INTO tbl_school_bus_assign_students (assign_bus_id, student_id)
+                VALUES (@assignbusid, @studentid);
+
+                SET @i = @i + 1;
+                SET @count = @count - 1;
+            END;
+
+            SELECT 200 AS StatusCode, 'Success' AS Message;
+        END
+        ELSE
+        BEGIN
+            -- Assignment not found
+            SELECT 201 AS StatusCode, 'Assignment not found' AS Message;
+        END
+    END
+    ELSE IF @flag = 'R'
+    BEGIN
+        -- Remove the assignment
+        SET @assignbusid = (SELECT TOP 1 assign_bus_id FROM tbl_school_bus_assign WHERE user_id = @userid AND bus_id = @busid AND sch_id = @schid AND is_del = 'N');
+        
+        IF @assignbusid IS NOT NULL
+        BEGIN
+            UPDATE tbl_school_bus_assign
+            SET is_del = 'Y',
+                updated_by = @userid,
+                updated_date = @today
+            WHERE assign_bus_id = @assignbusid;
+
+            SELECT 200 AS StatusCode, 'Success' AS Message;
+        END
+        ELSE
+        BEGIN
+            -- Assignment not found
+            SELECT 201 AS StatusCode, 'Assignment not found' AS Message;
+        END
+    END
+    ELSE IF @flag = 'S'
+    BEGIN
+        -- View the assignment details
+        SELECT 
+            a.assign_bus_id,
+            a.user_id,
+            a.imei_id,
+            a.sch_id,
+            a.bus_id,
+            a.pickup_location,
+            a.dropoff_location,
+            a.created_by,
+            a.updated_by,
+            a.created_date,
+            a.updated_date,
+            s.student_id
+        FROM tbl_school_bus_assign a
+        JOIN tbl_school_bus_assign_students s ON a.assign_bus_id = s.assign_bus_id
+        WHERE a.sch_id = @schid
+        AND a.bus_id = @busid
+        AND a.is_del = 'N';
+
+        SELECT 200 AS StatusCode, 'Success' AS Message;
+    END
+END;
