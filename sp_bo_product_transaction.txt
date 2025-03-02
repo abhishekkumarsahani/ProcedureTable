@@ -1,0 +1,211 @@
+USE [elitemagnessa]
+GO
+/****** Object:  StoredProcedure [dbo].[sp_bo_product_transaction]    Script Date: 2/28/2025 1:58:21 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROCEDURE [dbo].[sp_bo_product_transaction]
+    @flag NVARCHAR(2),  
+    @com_id NVARCHAR(255) = NULL,  
+    @user_id NVARCHAR(255) = NULL,  
+    @auth_code NVARCHAR(255) = NULL,  
+    @trans_status NVARCHAR(20) = NULL,
+    @from_date NVARCHAR(20) = NULL,
+    @to_date NVARCHAR(20) = NULL,
+    @reference_id NVARCHAR(255) = NULL,
+    @trans_id NVARCHAR(20) = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+
+	 -- Check if AuthCode is valid
+    IF NOT EXISTS (SELECT 1 FROM tbl_authentication_log WHERE user_id = @user_id AND auth_code = @auth_code )
+    BEGIN
+        SELECT 201 AS StatusCode, 'Authcode expired.' AS Message;
+        RETURN;
+    END
+
+	-- Check if the user exists and session is valid
+    IF NOT EXISTS (SELECT 1 FROM tbl_vendor WHERE ID = @user_id AND is_del = 'N' AND is_active = 'A')
+    BEGIN
+        SELECT 201 AS StatusCode, 'User does not exist.' AS Message;
+        RETURN;
+    END
+
+ -- Process commission calculation when flag = 'US'
+IF @flag = 'US'
+BEGIN
+    -- Check if transaction exists and is pending
+    IF EXISTS (SELECT 1 FROM tbl_product_transaction WHERE referral_id = @reference_id AND transaction_id = @trans_id AND trans_status = 'Pending')
+    BEGIN
+        -- Approve the transaction
+        UPDATE tbl_product_transaction
+        SET transaction_date = CONVERT(NVARCHAR, GETDATE(), 120),
+            trans_status = 'Approved'
+        WHERE referral_id = @reference_id AND transaction_id = @trans_id;
+
+		DECLARE @refvia NVARCHAR(70) = (SELECT referral_via FROM tbl_vendor WHERE referral_id = @reference_id);
+
+        -- Fetch transaction amount
+        DECLARE @TransactionAmount MONEY;
+        SELECT @TransactionAmount = SUM(total_price)
+        FROM tbl_product_transaction 
+        WHERE transaction_id = @trans_id;
+
+		 -- Fetch total transaction amount done by the referrer
+        DECLARE @TotalTransByUser MONEY;
+        SELECT @TotalTransByUser = SUM(total_price) 
+        FROM tbl_product_transaction 
+        WHERE referral_id = @reference_id AND trans_status = 'Approved';
+
+        -- If activation_date is NULL, set it
+        UPDATE tbl_vendor
+        SET activation_date = CONVERT(NVARCHAR, GETDATE(), 120)
+        WHERE referral_id = @reference_id AND activation_date IS NULL;
+
+        -- If total transaction amount is >= 3000, update referid-related records
+        IF @TotalTransByUser >= 3000
+        BEGIN				-- Update sales volume
+			UPDATE tbl_vendor
+			SET sales_volume = ISNULL(sales_volume, 0) + @TransactionAmount
+			WHERE referral_id = @refvia;
+        END
+
+       
+        -- Fetch referral path
+        DECLARE @ReferralPath NVARCHAR(MAX);
+        SELECT @ReferralPath = path FROM tbl_path WHERE referral_id = @reference_id;
+
+        -- If no referral path found, exit
+        IF @ReferralPath IS NULL
+        BEGIN
+            SELECT 400 AS StatusCode, 'No referral path found' AS Message;
+            RETURN;
+        END
+
+        -- Fetch commission levels
+        DECLARE @LevelID INT, @CommissionPercentage FLOAT;
+        DECLARE LevelCursor CURSOR FOR 
+        SELECT id, commission_percentage 
+        FROM tbl_level 
+        ORDER BY level_order ASC; -- Order remains the same
+
+        OPEN LevelCursor;
+
+        DECLARE @ReferralList TABLE (ReferralID NVARCHAR(50), LevelID INT, Commission FLOAT);
+        DECLARE @CurrentReferral NVARCHAR(50);
+        DECLARE @LevelCounter INT = 1;
+
+        -- **Reverse Processing: Start from the back**
+        
+        -- Remove leading '|' if present
+        IF LEFT(@ReferralPath, 1) = '|'
+            SET @ReferralPath = STUFF(@ReferralPath, 1, 1, '');
+
+        -- Remove the transaction owner's ID from the referral path
+        SET @ReferralPath = REPLACE(@ReferralPath, @reference_id, '');
+
+        -- Ensure there are no duplicate '||' after removal
+        SET @ReferralPath = REPLACE(@ReferralPath, '||', '|');
+
+        -- Remove leading or trailing '|' after cleanup
+        IF LEFT(@ReferralPath, 1) = '|' 
+            SET @ReferralPath = STUFF(@ReferralPath, 1, 1, '');
+
+        IF RIGHT(@ReferralPath, 1) = '|' 
+            SET @ReferralPath = LEFT(@ReferralPath, LEN(@ReferralPath) - 1);
+
+        -- **Extract referrals from the rightmost side**
+        WHILE LEN(@ReferralPath) > 0 AND @LevelCounter <= 9
+        BEGIN
+            -- Extract the last referral ID
+            SET @CurrentReferral = 
+                CASE 
+                    WHEN CHARINDEX('|', @ReferralPath) > 0 
+                    THEN RIGHT(@ReferralPath, CHARINDEX('|', REVERSE(@ReferralPath)) - 1)
+                    ELSE @ReferralPath -- Last remaining value
+                END;
+
+            -- Remove extracted referral ID from the path
+            SET @ReferralPath = 
+                CASE 
+                    WHEN CHARINDEX('|', @ReferralPath) > 0 
+                    THEN LEFT(@ReferralPath, LEN(@ReferralPath) - CHARINDEX('|', REVERSE(@ReferralPath)))
+                    ELSE ''
+                END;
+
+            -- **Ensure the referral is NOT the transaction owner**
+            IF @CurrentReferral IS NOT NULL AND @CurrentReferral <> '' AND @CurrentReferral <> @reference_id
+            BEGIN
+                -- Fetch next commission level
+                FETCH NEXT FROM LevelCursor INTO @LevelID, @CommissionPercentage;
+    
+                -- Insert into temporary table for tracking
+                INSERT INTO @ReferralList (ReferralID, LevelID, Commission)
+                VALUES (@CurrentReferral, @LevelID, @CommissionPercentage);
+
+                -- Increment counter
+                SET @LevelCounter = @LevelCounter + 1;
+            END
+        END;
+
+        CLOSE LevelCursor;
+        DEALLOCATE LevelCursor;
+
+        -- Insert calculated earnings into tbl_product_earning
+        INSERT INTO tbl_product_earning (
+            com_id, trans_id, referral_id, total_rate, week_id, referral_via, 
+            earning_type, earning_percent, level_id, fiscal_id, 
+            created_date, created_by, is_del, is_setteled
+        )
+        SELECT 
+            @com_id, @trans_id, ReferralID, @TransactionAmount * (Commission / 100), 
+            DATEPART(WEEK, GETDATE()), @reference_id, 'Direct Commisssion', 
+            CAST(Commission AS NVARCHAR), LevelID, NULL, 
+            CONVERT(NVARCHAR, GETDATE(), 120), @user_id, 'N', 'Y'
+        FROM @ReferralList;
+
+        SELECT 200 AS StatusCode, 'Transaction Updated & Earnings Distributed' AS Message;
+        RETURN;
+    END
+    ELSE
+    BEGIN
+        SELECT 400 AS StatusCode, 'No Pending Transactions Found' AS Message;
+        RETURN;
+    END
+END;
+
+    -- Show transactions
+    ELSE IF @flag = 'S'
+    BEGIN
+        SELECT transaction_id AS TransactionID, product_id AS ProductID, referral_id AS ReferenceID, 
+		'Km Khl' FullName,
+               retail_price AS RetailPrice, mrp_price AS MrpPrice, retail_percent AS RetailPercentage, qty AS Quantity, total_price AS TotalPrice, 
+               transaction_date AS TransactionDate, trans_status AS TransStatus
+        FROM tbl_product_transaction
+		WHERE 
+    (CASE WHEN @trans_status = '-1' THEN 1 
+          WHEN trans_status = @trans_status THEN 1 
+          ELSE 0 END) = 1
+AND (CASE WHEN @from_date IS NULL THEN 1 
+          WHEN transaction_date >= @from_date THEN 1 
+          ELSE 0 END) = 1
+AND (CASE WHEN @to_date IS NULL THEN 1 
+          WHEN transaction_date <= @to_date THEN 1 
+          ELSE 0 END) = 1
+AND (CASE WHEN @reference_id = '-1' THEN 1 
+          WHEN referral_id = @reference_id THEN 1 
+          ELSE 0 END) = 1;
+
+
+        SELECT 200 AS StatusCode, 'Success' AS Message;
+        RETURN; -- Ensure the procedure exits after sending the response
+    END
+    ELSE
+    BEGIN
+        SELECT 400 AS StatusCode, 'Invalid Flag Value' AS Message;
+        RETURN; -- Ensure the procedure exits after sending the response
+    END
+END;

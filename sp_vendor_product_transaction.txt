@@ -1,0 +1,218 @@
+USE [elitemagnessa]
+GO
+/****** Object:  StoredProcedure [dbo].[sp_vendor_product_transaction]    Script Date: 2/28/2025 2:02:25 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROCEDURE [dbo].[sp_vendor_product_transaction]
+    @flag NVARCHAR(2),  
+    @com_id NVARCHAR(50) = NULL,
+    @user_id NVARCHAR(50) = NULL,
+	@auth_code NVARCHAR(255) = NULL,  
+    @reference_id NVARCHAR(250) = NULL,
+	@trans_status NVARCHAR(20) = NULL,
+    @from_date NVARCHAR(20) = NULL,
+    @to_date NVARCHAR(20) = NULL,
+    @trans_id NVARCHAR(50) = NULL,
+    @prodlst XML = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+	 -- Trim the flag to avoid issues with extra spaces
+    SET @flag = RTRIM(LTRIM(@flag));
+
+    -- Validate Required Fields
+    IF @com_id IS NULL OR @user_id IS NULL
+    BEGIN
+        SELECT 400 AS StatusCode, 'Required fields cannot be empty.' AS Message;
+        RETURN;
+    END
+		-- Check if the user exists and session is valid
+    IF NOT EXISTS (SELECT 1 FROM tbl_vendor WHERE ID = @user_id AND is_del = 'N' AND is_active = 'A')
+    BEGIN
+        SELECT 201 AS StatusCode, 'User does not exist.' AS Message;
+        RETURN;
+    END
+	
+
+	 -- Check if AuthCode is valid
+    IF NOT EXISTS (SELECT 1 FROM tbl_authentication_log WHERE user_id = @user_id AND auth_code = @auth_code )
+    BEGIN
+        SELECT 201 AS StatusCode, 'Authcode expired.' AS Message;
+        RETURN;
+    END
+
+    -- Flag 'I': Insert Product Transaction
+    IF @flag = 'I'
+    BEGIN
+	 -- Validate Reference ID
+        IF NOT EXISTS (SELECT 1 FROM tbl_vendor WHERE referral_id = @reference_id)
+        BEGIN
+            SELECT 202 AS StatusCode, 'Reference does not exist.' AS Message;
+            RETURN;
+        END
+       
+
+        -- Generate Unique Transaction ID
+        DECLARE @generated_trans_id NVARCHAR(20);
+        SET @generated_trans_id = CONCAT('T', RIGHT('00000' + CAST(ABS(CHECKSUM(NEWID())) % 100000 AS NVARCHAR), 5));
+
+        -- Create Temporary Table for XML Data
+        DECLARE @ProductTable TABLE (
+            ProductID INT,
+            MRPRate MONEY,
+            RetailRate INT,
+            RetailPrice MONEY,
+            Qty INT,
+            TotalPrice MONEY
+        );
+
+        -- Insert XML Data into Temporary Table
+        INSERT INTO @ProductTable (ProductID, MRPRate, RetailRate, Qty)
+        SELECT
+            x.value('(ProductID/text())[1]', 'INT'),
+            x.value('(MRPRate/text())[1]', 'MONEY'),
+            x.value('(RetailRate/text())[1]', 'INT'),
+            x.value('(Qty/text())[1]', 'INT')
+        FROM @prodlst.nodes('/ArrayOfProdList/ProdList') AS T(x);
+
+        -- Calculate Prices & PV
+        UPDATE @ProductTable
+        SET 
+            RetailPrice = MRPRate - (MRPRate * RetailRate / 100.0),
+            TotalPrice = Qty * (MRPRate - (MRPRate * RetailRate / 100.0));
+
+        -- Insert into Transactions Table
+        INSERT INTO tbl_product_transaction (
+            com_id, transaction_id, product_id, referral_id, retail_price, mrp_price, 
+            retail_percent, qty, total_price, transaction_date, 
+            trans_status,created_by,updated_by,created_date,updated_date, is_del
+        )
+        SELECT 
+            @com_id, @generated_trans_id, ProductID, @reference_id, RetailPrice, MRPRate, 
+            RetailRate, Qty, TotalPrice, CONVERT(NVARCHAR, GETDATE(), 120), 
+            'Pending',@user_id,@user_id,CONVERT(NVARCHAR, GETDATE(), 120),CONVERT(NVARCHAR, GETDATE(), 120), 'N'
+        FROM @ProductTable;
+
+        -- Return Success Response
+        SELECT 200 AS StatusCode, 'Transaction inserted successfully.' AS Message, @generated_trans_id AS TransactionID;
+        RETURN;
+    END
+
+   ELSE IF @flag = 'S'
+BEGIN
+    SELECT 
+        transaction_id AS TransID, 
+		12 WeekID,
+		transaction_date AS TransDate, 
+        COUNT(product_id) AS NoProduct, 
+        (SELECT first_name + ' ' + last_name FROM tbl_vendor WHERE id = @user_id) AS FullName,
+        SUM(total_price) AS TotalAmt,
+        trans_status AS TransStatus
+    FROM tbl_product_transaction
+    WHERE 
+        is_del = 'N'
+        AND 
+        CASE 
+            WHEN @trans_status = '-1' THEN 1 
+            WHEN trans_status = @trans_status THEN 1 
+            ELSE 0 
+        END = 1
+        AND 
+        CASE 
+            WHEN @from_date IS NULL THEN 1 
+            WHEN transaction_date >= @from_date THEN 1 
+            ELSE 0 
+        END = 1
+        AND 
+        CASE 
+            WHEN @to_date IS NULL THEN 1 
+            WHEN transaction_date <= @to_date THEN 1 
+            ELSE 0 
+        END = 1
+        AND 
+        CASE 
+            WHEN @reference_id = '-1' THEN 1 
+            WHEN referral_id = @reference_id THEN 1 
+            ELSE 0 
+        END = 1
+    GROUP BY transaction_id, transaction_date, trans_status;
+
+    SELECT 200 AS StatusCode, 'Success' AS Message;
+    RETURN;
+END
+
+
+    -- Flag 'R': Remove Transaction
+    ELSE IF @flag = 'R'
+    BEGIN
+        -- Check if Transaction Exists and is Pending
+        IF NOT EXISTS (SELECT 1 FROM tbl_product_transaction WHERE transaction_id = @trans_id AND trans_status = 'Pending' AND is_del = 'N')
+        BEGIN
+            SELECT 203 AS StatusCode, 'Transaction does not exist or is not pending.' AS Message;
+            RETURN;
+        END
+
+        -- Mark as Deleted
+        UPDATE tbl_product_transaction 
+        SET is_del = 'Y'
+        WHERE transaction_id = @trans_id
+		AND trans_status = 'Pending';
+
+        SELECT 200 AS StatusCode, 'Transaction removed successfully.' AS Message;
+        RETURN;
+    END
+
+    -- Flag 'SI': Show Transaction Info
+   ELSE IF @flag = 'SI'
+    BEGIN
+        -- Check if Transaction Exists
+        IF NOT EXISTS (SELECT 1 FROM tbl_product_transaction WHERE transaction_id = @trans_id AND is_del = 'N')
+        BEGIN
+            SELECT 204 AS StatusCode, 'Transaction not found.' AS Message;
+            RETURN;
+        END
+
+        -- Return Transaction Details
+        SELECT 
+            transaction_id AS TransID, 
+            transaction_date AS TransDate, 
+            COUNT(product_id) AS NoProduct, 
+            (SELECT first_name + ' ' + last_name FROM tbl_vendor WHERE id = @user_id) AS FullName,
+            SUM(total_price) AS TotalAmt, 
+            trans_status AS TransStatus
+        FROM tbl_product_transaction
+        WHERE transaction_id = @trans_id
+        GROUP BY transaction_id, transaction_date, trans_status;
+
+        -- Return Product Info for the Transaction
+        SELECT 
+		transaction_id AS TransID,
+            product_id AS ProdID, 
+			'Name' AS ProdName,
+            --(SELECT product_name FROM tbl_product WHERE id = p.product_id) AS ProdName,
+            qty AS ProdQty, 
+            retail_price AS ProdRate
+        FROM tbl_product_transaction p
+        WHERE transaction_id = @trans_id;
+
+        -- Return Order Info for the Transaction (Modify based on actual table)
+        SELECT 
+		transaction_id AS TransID,
+            transaction_date AS OrderDate, 
+            trans_status AS OrderStatus
+        FROM tbl_product_transaction
+        WHERE transaction_id = @trans_id;
+
+        SELECT 200 AS StatusCode, 'Success' AS Message;
+        RETURN;
+    END
+
+    -- Invalid Flag Handling
+    ELSE
+    BEGIN
+        SELECT 400 AS StatusCode, 'Invalid Flag Value' AS Message;
+        RETURN;
+    END
+END;
